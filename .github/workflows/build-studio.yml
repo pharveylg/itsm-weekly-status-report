@@ -1,0 +1,51 @@
+name: Build ITSM Studio
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build single-file SharePoint artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build production studio
+        run: npm run build
+
+      - name: Verify single-file output
+        shell: bash
+        run: |
+          test -f dist/index.html
+          if grep -q 'src="/src/main.tsx"' dist/index.html; then
+            echo "Production artifact still references Vite source files."
+            exit 1
+          fi
+          echo "Artifact size: $(wc -c < dist/index.html) bytes"
+
+      - name: Upload SharePoint deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: itsm-studio-sharepoint-build
+          path: dist/index.html
+          if-no-files-found: error
+          retention-days: 30

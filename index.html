@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f7fb" />
+    <title>ITSM FlowCard Studio · Ingram Micro</title>
+    <style>
+      /* Boot sentinel — renders with zero JS and zero external assets so the page
+         can never be silently blank. React removes #boot-sentinel on mount; if the
+         app's script is blocked (CSP / 404 / proxy), the sentinel stays and, after
+         2.6s, pure-CSS keyframes swap the "starting" line for a self-diagnosis panel. */
+      #boot-sentinel{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#f5f7fb;background-image:radial-gradient(1100px 520px at 88% -12%,rgba(61,109,181,.14),transparent 62%),radial-gradient(900px 640px at -8% 24%,rgba(16,42,82,.07),transparent 58%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1a2238;padding:24px;-webkit-font-smoothing:antialiased}
+      #boot-card{position:relative;max-width:560px;width:100%;background:#fff;border:1px solid #cdd6e6;border-radius:16px;box-shadow:0 24px 60px -28px rgba(16,42,82,.45);overflow:hidden}
+      #boot-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:linear-gradient(180deg,#3d6db5,#24508f)}
+      #boot-inner{padding:30px 34px 30px 38px}
+      #boot-lock{display:flex;align-items:baseline;gap:8px;font-weight:800;letter-spacing:-.03em;font-size:15px}
+      #boot-lock .im{color:#3d6db5}
+      #boot-lock .xv{color:#8e9094;font-weight:700}
+      #boot-lock .xv b{color:#3d6db5;font-weight:700}
+      #boot-kicker{margin-top:14px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:#3d6db5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      #boot-title{font-size:clamp(22px,4vw,28px);font-weight:800;letter-spacing:-.02em;margin:8px 0 0;line-height:1.12;color:#1a2238}
+      #boot-loading{margin-top:18px;display:flex;align-items:center;gap:11px;color:#5a6478;font-size:13.5px;animation:bootFadeOut .4s ease 2.6s forwards}
+      #boot-dots{display:inline-flex;gap:5px}
+      #boot-dots i{width:7px;height:7px;border-radius:50%;background:#3d6db5;display:inline-block;animation:bootPulse 1.1s ease-in-out infinite}
+      #boot-dots i:nth-child(2){animation-delay:.18s}
+      #boot-dots i:nth-child(3){animation-delay:.36s}
+      @keyframes bootPulse{0%,100%{opacity:.22;transform:scale(.78)}50%{opacity:1;transform:scale(1)}}
+      #boot-help{margin-top:18px;border-top:1px solid #e7ecf5;padding-top:16px;opacity:0;visibility:hidden;max-height:0;overflow:hidden;animation:bootReveal .45s ease 2.6s forwards}
+      #boot-help h3{margin:0 0 9px;font-size:13px;font-weight:800;color:#c83a3a;letter-spacing:.01em;display:flex;align-items:center;gap:7px}
+      #boot-help h3 .dot{width:8px;height:8px;border-radius:50%;background:#c83a3a;display:inline-block}
+      #boot-help ol{margin:0;padding-left:18px;font-size:13px;line-height:1.7;color:#3a4256}
+      #boot-help li{margin:0 0 4px}
+      #boot-help code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#eef2f9;border:1px solid #d8e0ee;border-radius:5px;padding:1px 6px;font-size:12px;color:#24508f;white-space:nowrap}
+      #boot-help .hint{margin-top:12px;font-size:11.5px;color:#6e7787;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;line-height:1.6;background:#f5f7fb;border:1px dashed #cdd6e6;border-radius:8px;padding:9px 11px}
+      @keyframes bootFadeOut{to{opacity:0;visibility:hidden;max-height:0;margin-top:0;overflow:hidden}}
+      @keyframes bootReveal{to{opacity:1;visibility:visible;max-height:640px}}
+      #boot-noscript{margin-top:16px;font-size:12.5px;color:#8b2a08;background:#fde0d4;border:1px solid #c83a3a;border-radius:8px;padding:9px 12px;line-height:1.6}
+      @media (prefers-reduced-motion:reduce){#boot-dots i{animation:none;opacity:.7}#boot-loading{animation:none}#boot-help{animation:none;opacity:1;visibility:visible;max-height:640px}}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- Self-diagnosing boot sentinel (sibling of #root; removed by the app on mount) -->
+    <div id="boot-sentinel" role="status">
+      <div id="boot-card">
+        <div id="boot-inner">
+          <div id="boot-lock"><span class="im">INGRAM</span><span class="xv"><b>X</b>vantage</span></div>
+          <div id="boot-kicker">ITSM FlowCard Studio</div>
+          <h1 id="boot-title">Loading your weekly studio…</h1>
+
+          <div id="boot-loading">
+            <span id="boot-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Starting the studio — if this is all you see for more than a few seconds, read on.</span>
+          </div>
+
+          <div id="boot-help" role="alert">
+            <h3><span class="dot"></span> The page loaded, but the studio didn’t start</h3>
+            <ol>
+              <li><strong>Hard-refresh</strong> this tab (<code>Ctrl</code>+<code>Shift</code>+<code>R</code> / <code>Cmd</code>+<code>Shift</code>+<code>R</code>) — a cached or half-uploaded shell is the most common cause.</li>
+              <li>Open <strong>DevTools → Console</strong>. A red line there names the fault exactly: <code>Refused to execute inline script … Content Security Policy</code> means the host/proxy is blocking the script; <code>404 … /assets/</code> means the uploaded file is incomplete.</li>
+              <li>Confirm you uploaded the <strong>single-file build</strong> (<code>dist/index.html</code>, ≈ 400&nbsp;kB with one inline <code>&lt;script&gt;</code>) — not a file that points at <code>/assets/*.js</code>, which 404s when only the HTML is present.</li>
+            </ol>
+            <div class="hint">tip: append <code>?v=2</code> to the URL to bypass the edge cache, e.g.<br />https://itsmstudio.z13.web.core.windows.net/?v=2</div>
+          </div>
+
+          <noscript>
+            <div id="boot-noscript">
+              <strong>JavaScript is disabled.</strong> The ITSM FlowCard Studio is a single-page app and needs JavaScript enabled to run. Turn it on for this site and reload.
+            </div>
+          </noscript>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
