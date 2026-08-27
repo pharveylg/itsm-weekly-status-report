@@ -3,6 +3,7 @@ import { FlowCardFormData, TeamId, TEAMS, teamMeta, PILLARS, PillarType, activeI
 import { ragDot, ragChip } from '../utils/rag-ui';
 import { etaKind, etaLabel, etaTone } from '../utils/eta';
 import { buildTeamWeeklyDocx } from '../utils/teamDocExport';
+import { OGRP_SITE, OGRP_SITE_RELATIVE, SERVICE_DELIVERY_LIBRARY } from '../data/sharepointConfig';
 import { BrandLockup } from './BrandLockup';
 import {
   FileText, Users, Clock, Cpu, CheckCircle2, ListChecks,
@@ -14,8 +15,7 @@ interface Props {
   capgeminiData: FlowCardFormData;
 }
 
-const OGRP_SITE = 'https://ingrammicro.sharepoint.com/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology';
-const LIBRARY = 'ITSM Service Delivery';
+const LIBRARY = SERVICE_DELIVERY_LIBRARY;
 
 const PILLAR_META: Record<PillarType, { Icon: React.ElementType; icon: string }> = {
   People: { Icon: Users, icon: 'text-brand' },
@@ -63,7 +63,7 @@ export const TeamWeeklyDocReport: React.FC<Props> = ({ ingramData, capgeminiData
       const digest = (await digRes.json()).d.GetContextWebInformation.FormDigestValue;
 
       // 3. Upload binary blob via SharePoint REST files/add
-      const uploadUrl = `${OGRP_SITE}/_api/web/getfolderbyserverrelativeurl('/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology/${LIBRARY}')/files/add(url='${encodeURIComponent(fileName)}',overwrite=true)`;
+      const uploadUrl = `${OGRP_SITE}/_api/web/getfolderbyserverrelativeurl('${OGRP_SITE_RELATIVE}/${LIBRARY}')/files/add(url='${encodeURIComponent(fileName)}',overwrite=true)`;
       const upRes = await fetch(uploadUrl, {
         method: 'POST',
         credentials: 'include',

@@ -14,6 +14,7 @@ import { TeamWeeklyDocReport } from './components/TeamWeeklyDocReport';
 import { buildMergedItems, acceptedAsFlowItems } from './utils/mergeEngine';
 import { recalcMetric } from './utils/rag-ui';
 import { generatePowerAutomateFlowDefinitionJson } from './data/powerAutomateWorkflow';
+import { OGRP_SITE, DISPATCH_QUEUE_LIST, DISPATCH_RUNNER_URL, DEFAULT_RECIPIENT } from './data/sharepointConfig';
 
 type TabKey = 'flowcard-ingram' | 'flowcard-capgemini' | 'team-doc' | 'merge-studio' | 'flow-builder' | 'executive-report' | 'adaptive-json' | 'm365-connections' | 'deliverables';
 interface LogEntry { timestamp: string; step: string; status: 'pending' | 'success' | 'running'; }
@@ -37,8 +38,48 @@ const nextWeekLabel = (s: string) => {
 // Embed web part on a modern page, or as a hosted .aspx). That makes every
 // REST call same-origin and every SSO cookie automatic, so the direct write
 // to the dispatch queue works with no popup, no runner file, no console paste.
-const OGRP_SITE = 'https://ingrammicro.sharepoint.com/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology';
-const QUEUE_LIST = 'ITSM_Dispatch_Queue';
+// When it's opened from anywhere else, the fetch fails cross-origin — the
+// popup runner (dispatch-runner.html) is the fallback for exactly that case.
+const QUEUE_LIST = DISPATCH_QUEUE_LIST;
+
+// A same-origin/CORS failure surfaces as a generic TypeError ("Failed to
+// fetch") with no HTTP status — that's how we tell "wrong origin" apart from
+// a real HTTP error (404 = list missing, 403 = auth) in the catch blocks below.
+function isCrossOriginFailure(err: unknown): boolean {
+  return err instanceof TypeError;
+}
+
+// Cross-origin fallback: opens dispatch-runner.html (must be uploaded to
+// Site Assets alongside index.html — see the M365 Connections tab's download
+// button) in a popup. That page is served BY SharePoint, so it always has
+// same-origin SSO regardless of where this studio itself is hosted; we hand
+// it the payload over postMessage and it performs the write on our behalf.
+function writeDispatchTicketViaPopup(payload: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const runnerOrigin = new URL(DISPATCH_RUNNER_URL).origin;
+    const opened = window.open(DISPATCH_RUNNER_URL, 'itsm-dispatch-runner', 'width=480,height=360');
+    if (!opened) { reject(new Error('Popup blocked — allow popups for this site and retry.')); return; }
+    const popup = opened;
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('Dispatch runner did not respond in time — is dispatch-runner.html uploaded to Site Assets?'));
+    }, 30000);
+    function cleanup() { clearTimeout(timeout); window.removeEventListener('message', onMessage); }
+    function onMessage(e: MessageEvent) {
+      if (e.source !== popup || e.origin !== runnerOrigin) return;
+      const msg = e.data as { type?: string; data?: unknown } | undefined;
+      if (msg?.type === 'itsm-runner-ready') {
+        popup.postMessage({ type: 'itsm-dispatch', payload }, runnerOrigin);
+      } else if (msg?.type === 'itsm-dispatch-done') {
+        cleanup(); popup.close(); resolve();
+      } else if (msg?.type === 'itsm-dispatch-error') {
+        cleanup(); popup.close(); reject(new Error(`Runner reported: ${msg.data}`));
+      }
+    }
+    window.addEventListener('message', onMessage);
+  });
+}
 
 export function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('flowcard-ingram');
@@ -67,10 +108,11 @@ export function App() {
   const [finalizedAt, setFinalizedAt] = useState<number | null>(null);
 
   // Queue status — 'ok' when the list is reachable from this browser session,
-  // 'missing' when the list itself doesn't exist yet, 'checking' during the probe.
-  // We no longer track a 'blocked' state because SharePoint-hosted deployment
-  // removes the cross-origin failure mode entirely.
-  const [queueStatus, setQueueStatus] = useState<'unknown' | 'checking' | 'ok' | 'missing'>('unknown');
+  // 'missing' when the list itself doesn't exist yet, 'blocked' when the fetch
+  // never reached SharePoint at all (studio opened outside the OGRP origin —
+  // the cross-origin failure mode dispatch-runner.html exists to work around),
+  // 'checking' during the probe.
+  const [queueStatus, setQueueStatus] = useState<'unknown' | 'checking' | 'ok' | 'missing' | 'blocked'>('unknown');
 
   const verifyQueue = async () => {
     setQueueStatus('checking');
@@ -80,12 +122,13 @@ export function App() {
       });
       if (r.status === 404) { setQueueStatus('missing'); return; }
       setQueueStatus(r.ok ? 'ok' : 'missing');
-    } catch { setQueueStatus('missing'); }
+    } catch (err) {
+      setQueueStatus(isCrossOriginFailure(err) ? 'blocked' : 'missing');
+    }
   };
 
   // Intended recipient for the digest — single mailbox while wiring, rotated to
   // the distribution only once the pipe is proven. Stored per-browser.
-  const DEFAULT_RECIPIENT = 'patrickharvey.gaddi@ingrammicro.com';
   const [recipient, setRecipient] = useState<string>(() => {
     try { return localStorage.getItem('itsm_recipient') || DEFAULT_RECIPIENT; } catch { return DEFAULT_RECIPIENT; }
   });
@@ -135,6 +178,7 @@ export function App() {
     const adWeek = metrics.find(m => m.id === 'mi_detection')?.weekOfJul13 ?? '';
     const payload = {
       reportWeek: formData.reportWeek,
+      recipient,
       overallRag: overall,
       ragStatus: overall.charAt(0).toUpperCase() + overall.slice(1),
       metricsAnalysis: formData.metricsAnalysis,
@@ -212,8 +256,39 @@ export function App() {
         throw new Error(`Queue write failed (HTTP ${res.status})${detail}`);
       }
 
+      markDispatched();
+    } catch (err) {
+      if (isCrossOriginFailure(err)) {
+        setQueueStatus('blocked');
+        setSubmissionLog(prev => [
+          ...prev,
+          { timestamp: now(), step: '⚠ Direct write blocked (cross-origin) · opening the dispatch runner popup…', status: 'running' },
+        ]);
+        try {
+          await writeDispatchTicketViaPopup(payload);
+          markDispatched();
+        } catch (popupErr) {
+          const msg = popupErr instanceof Error ? popupErr.message : String(popupErr);
+          setSubmissionLog(prev => [
+            ...prev.map(l => (l.step.includes('Writing dispatch ticket') || l.step.includes('dispatch runner popup') ? { ...l, status: 'pending' as const } : l)),
+            { timestamp: now(), step: `❌ ${msg}`, status: 'success' },
+            { timestamp: now(), step: 'Download dispatch-runner.html from the M365 Connections tab and upload it to Site Assets (next to index.html), then retry.', status: 'success' },
+          ]);
+        }
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        setSubmissionLog(prev => [
+          ...prev.map(l => (l.step.includes('Writing dispatch ticket') ? { ...l, status: 'pending' as const } : l)),
+          { timestamp: now(), step: `❌ ${msg}`, status: 'success' },
+        ]);
+      }
+    } finally {
+      setIsSimulating(false);
+    }
+
+    function markDispatched() {
       setSubmissionLog(prev => [
-        ...prev.map(l => (l.step.includes('Writing dispatch ticket') ? { ...l, status: 'success' as const } : l)),
+        ...prev.map(l => (l.step.includes('Writing dispatch ticket') || l.step.includes('dispatch runner popup') ? { ...l, status: 'success' as const } : l)),
         { timestamp: now(), step: '5. ✅ Ticket queued · Flow B waking on the new item…', status: 'success' },
         { timestamp: now(), step: '6. File + Outlook digest land in ~20s · check your inbox', status: 'success' }
       ]);
@@ -221,15 +296,6 @@ export function App() {
       setFinalizedAt(Date.now());
       setPhase('closed');
       setNowMs(CLOSE_MS + 1);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSubmissionLog(prev => [
-        ...prev.map(l => (l.step.includes('Writing dispatch ticket') ? { ...l, status: 'pending' as const } : l)),
-        { timestamp: now(), step: `❌ ${msg}`, status: 'success' },
-        { timestamp: now(), step: 'Make sure the studio is opened from inside SharePoint (Embed page), not the raw file link.', status: 'success' },
-      ]);
-    } finally {
-      setIsSimulating(false);
     }
   }
 

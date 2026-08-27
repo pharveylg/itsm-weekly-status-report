@@ -489,7 +489,7 @@ export const ExecutiveReportView: React.FC<Props> = (p) => {
                 : queueStatus === 'missing'
                 ? <span className="text-crit-deep">The queue list wasn’t found. Run the “create the dispatch queue” snippet on the M365 tab, then re-verify.</span>
                 : queueStatus === 'blocked'
-                ? <span className="text-warn-deep">Couldn’t reach SharePoint from this browser (cross-origin). Open the studio from within SharePoint, or send IT the DLP exception ask.</span>
+                ? <span className="text-warn-deep">Couldn’t reach SharePoint from this browser (cross-origin) — the studio isn’t being served from the OGRP site. Open it from the embedded SharePoint page, or Finalize will automatically try the dispatch runner popup fallback (set it up once on the M365 Connections tab).</span>
                 : <span className="text-ink-soft">Sandbox mode. Verify the dispatch queue to enable live dispatches.</span>}
             </p>
             <button type="button" onClick={onVerifyQueue} disabled={queueStatus === 'checking' || locked}

@@ -260,9 +260,9 @@ export const DeliverablesPreview: React.FC<Props> = ({ formData, overall, metric
           {/* display form */}
           <div className="p-5 sm:p-7 space-y-6 bg-paper">
             <div className="space-y-1">
-              <div className="text-[10px] font-mono font-bold text-ink-soft uppercase tracking-wider">Name (file in the library)</div>
-              <div className="text-lg font-extrabold text-ink font-display">ITSM Weekly Status – {formData.reportWeek} <span className="text-sm font-mono font-medium text-ink-soft">.json</span></div>
-              <p className="text-[11px] text-ink-soft font-body">The flow writes one file per finalize into <span className="font-mono text-tech">ITSM Service Delivery</span>; re-runs never collide because each file carries a unique timestamp.</p>
+              <div className="text-[10px] font-mono font-bold text-ink-soft uppercase tracking-wider">Title (row in the list)</div>
+              <div className="text-lg font-extrabold text-ink font-display">{formData.reportWeek}</div>
+              <p className="text-[11px] text-ink-soft font-body">Flow B writes one row per finalize here, plus the generated report as <span className="font-mono text-tech">ITSM-Weekly-{formData.reportWeek}.docx</span> in <span className="font-mono text-tech">ITSM Service Delivery</span> — linked back via Report_Doc_Url below.</p>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4">
@@ -274,6 +274,7 @@ export const DeliverablesPreview: React.FC<Props> = ({ formData, overall, metric
               <Field label="Major_Incidents"><span className="font-mono font-bold">{metrics.find(m => m.id === 'mi_count')?.weekOfJul13 ?? '—'}</span></Field>
               <Field label="Alert_Detection"><span className="font-mono font-bold">{metrics.find(m => m.id === 'mi_detection')?.weekOfJul13 ?? '—'}</span></Field>
               <Field label="Window_Closed_At"><span className="font-mono">2026-07-20 07:00:14Z</span></Field>
+              <Field label="Report_Doc_Url"><span className="font-mono text-tech">ITSM-Weekly-{formData.reportWeek}.docx</span></Field>
               <Field label="Active priorities"><span className="font-mono font-bold text-brand-deep">{act.length}</span></Field>
               <Field label="Completed"><span className="font-mono font-bold text-ok-deep">{comp.length}</span></Field>
             </div>

@@ -65,17 +65,17 @@ export const PowerAutomateFlowViewer: React.FC = () => {
           <div className="space-y-3 max-w-2xl">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white/80 border border-line text-[11px] font-bold font-mono text-brand-deep uppercase tracking-wider">
-                <Zap className="w-3.5 h-3.5 text-brand" /> Cloud Flow Package
+                <Zap className="w-3.5 h-3.5 text-brand" /> Flow B · Cloud Flow Package
               </span>
               <span className="text-xs text-ink-soft font-mono flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-ok dot-live" /> 6 stages · import-ready
+                <span className="w-2 h-2 rounded-full bg-ok dot-live" /> {POWER_AUTOMATE_STEPS.length} stages · import-ready
               </span>
             </div>
             <h2 className="text-2xl sm:text-3xl font-extrabold text-ink font-display tracking-tight leading-tight">
-              The full Power Automate workflow — export & import in one click
+              "Flow B" — the flow the studio depends on, export &amp; import in one click
             </h2>
             <p className="text-sm text-ink-soft leading-relaxed max-w-xl">
-              Delivers the Adaptive Card to Teams, parses every People / Process / Technology field plus its RAG, auto-composes the overall status, writes to SharePoint, and emails the executive digest.
+              Triggers on the dispatch ticket the studio writes to <span className="font-mono text-tech">ITSM_Dispatch_Queue</span> on Finalize — not a recurrence — then generates the weekly Word doc, writes the SharePoint system-of-record row, flips the Teams card to closed, and sends the executive digest.
             </p>
             <div className="flex items-center gap-2 pt-1">
               <button onClick={handleCopy} className="inline-flex items-center px-3.5 py-2 text-xs font-bold rounded-lg bg-white hover:bg-mist text-ink border border-line transition font-mono active:scale-[0.98] shadow-sm">
@@ -93,7 +93,7 @@ export const PowerAutomateFlowViewer: React.FC = () => {
                 <Workflow className="w-6 h-6 text-white" />
               </div>
             </div>
-            <span className="text-base font-extrabold font-display text-brand-deep tracking-wide">06</span>
+            <span className="text-base font-extrabold font-display text-brand-deep tracking-wide">{String(POWER_AUTOMATE_STEPS.length).padStart(2, '0')}</span>
             <span className="text-[10px] font-mono text-ink-soft lowercase">connected actions</span>
           </div>
         </div>
@@ -180,11 +180,13 @@ export const PowerAutomateFlowViewer: React.FC = () => {
               <h4 className="text-xs font-extrabold text-ink uppercase tracking-wider font-display">Import into Power Automate</h4>
             </div>
             <ol className="space-y-2 text-xs text-ink list-decimal list-inside leading-relaxed">
+              <li>Provision <span className="font-mono text-tech">ITSM_Dispatch_Queue</span> and <span className="font-mono text-tech">ITSM_Weekly_Updates</span> first (M365 Connections tab).</li>
               <li>Click <strong>Download Flow (.json)</strong> to save the definition.</li>
               <li>Open <a href="https://make.powerautomate.com" target="_blank" rel="noreferrer" className="text-brand-deep font-bold hover:underline inline-flex items-center gap-0.5 font-mono">make.powerautomate.com <ExternalLink className="w-3 h-3" /></a>.</li>
               <li><strong>My flows → Import → Import package (.json)</strong>.</li>
-              <li>Connect <span className="font-mono text-brand-deep">Teams</span>, <span className="font-mono text-tech">SharePoint</span>, <span className="font-mono text-warn-deep">Outlook</span>.</li>
-              <li><strong>Save & turn on</strong> — the weekly recurrence is live.</li>
+              <li>Connect <span className="font-mono text-brand-deep">Teams</span>, <span className="font-mono text-tech">SharePoint</span>, <span className="font-mono text-warn-deep">Outlook</span> — plus <span className="font-mono text-ink-soft">Word Online (Business)</span> for the template step.</li>
+              <li>Upload the weekly Word template to <span className="font-mono text-tech">ITSM Service Delivery</span> once, then paste its file ID into <span className="font-mono">WordTemplateFileId</span>.</li>
+              <li><strong>Save & turn on</strong> — it wakes the next time the studio finalizes a week.</li>
             </ol>
           </div>
         </div>

@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import { SHAREPOINT_PNP_SCRIPT } from '../data/powerAutomateWorkflow';
+import { OGRP_SITE, DISPATCH_QUEUE_LIST, WEEKLY_UPDATES_LIST } from '../data/sharepointConfig';
+import { DISPATCH_RUNNER_HTML } from '../data/dispatchRunner';
 import { FlowCardFormData, RagStatus, activeItems, completedItems } from '../types/itsm';
 import { ragDot } from '../utils/rag-ui';
 import { BrandLockup } from './BrandLockup';
-import { Terminal, Copy, Check, Mail, Layers, Table, Zap } from 'lucide-react';
+import { Terminal, Copy, Check, Mail, Layers, Table, Zap, FileWarning } from 'lucide-react';
 
 
 interface Props {
   formData: FlowCardFormData;
   overall: RagStatus;
-  queueStatus: 'unknown' | 'checking' | 'ok' | 'missing';
+  queueStatus: 'unknown' | 'checking' | 'ok' | 'missing' | 'blocked';
   onVerifyQueue: () => void;
   recipient: string;
   setRecipient: (url: string) => void;
@@ -18,27 +20,31 @@ interface Props {
 // Creates the ITSM_Dispatch_Queue list + Payload column. Flow B wakes on
 // "When an item is created" here — SharePoint-only, so it sails through DLP.
 const QUEUE_SNIPPET = `(async function () {
-  var web = (window._spPageContextInfo && window._spPageContextInfo.webAbsoluteUrl) || "https://ingrammicro.sharepoint.com/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology";
+  var web = (window._spPageContextInfo && window._spPageContextInfo.webAbsoluteUrl) || "${OGRP_SITE}";
   var digest = await fetch(web + "/_api/contextinfo", { method: "POST", headers: { Accept: "application/json;odata=verbose" } }).then(function (r) { return r.json(); }).then(function (d) { return d.d.GetContextWebInformation.FormDigestValue; });
-  var mk = await fetch(web + "/_api/web/lists", { method: "POST", headers: { Accept: "application/json;odata=verbose", "Content-Type": "application/json;odata=verbose", "X-RequestDigest": digest }, body: JSON.stringify({ __metadata: { type: "SP.List" }, Title: "ITSM_Dispatch_Queue", BaseTemplate: 100, Description: "Dispatch tickets written by the ITSM Studio. Flow B fires when an item appears." }) });
+  var mk = await fetch(web + "/_api/web/lists", { method: "POST", headers: { Accept: "application/json;odata=verbose", "Content-Type": "application/json;odata=verbose", "X-RequestDigest": digest }, body: JSON.stringify({ __metadata: { type: "SP.List" }, Title: "${DISPATCH_QUEUE_LIST}", BaseTemplate: 100, Description: "Dispatch tickets written by the ITSM Studio. Flow B fires when an item appears." }) });
   if (!mk.ok && mk.status !== 400) { console.log("\\u2717 list: HTTP " + mk.status); return; }
   console.log(mk.status === 400 ? "\\u00b7 queue list already exists" : "\\u2713 queue list created");
-  var f = await fetch(web + "/_api/web/lists/getbytitle('ITSM_Dispatch_Queue')/fields", { method: "POST", headers: { Accept: "application/json;odata=verbose", "Content-Type": "application/json;odata=verbose", "X-RequestDigest": digest }, body: JSON.stringify({ __metadata: { type: "SP.FieldMultiLineText" }, Title: "Payload", FieldTypeKind: 3, RichText: false, NumberOfLines: 20 }) });
+  var f = await fetch(web + "/_api/web/lists/getbytitle('${DISPATCH_QUEUE_LIST}')/fields", { method: "POST", headers: { Accept: "application/json;odata=verbose", "Content-Type": "application/json;odata=verbose", "X-RequestDigest": digest }, body: JSON.stringify({ __metadata: { type: "SP.FieldMultiLineText" }, Title: "Payload", FieldTypeKind: 3, RichText: false, NumberOfLines: 20 }) });
   console.log(f.ok ? "\\u2713 Payload column added" : "\\u00b7 Payload: HTTP " + f.status);
   console.log("Now hit 'Verify dispatch queue' in the studio.");
 })();`;
 
-// Paste into the browser console on any page of the OGRP site — reads the library
+// Paste into the browser console on any page of the OGRP site — reads the list
 // schema straight from the logged-in SSO session, no PowerShell required.
-const VERIFY_SNIPPET = `var site = "/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology";
-fetch(site + "/_api/web/lists/getbytitle('ITSM Service Delivery')/fields?$select=Title,InternalName,TypeAsString&$filter=Hidden eq false", { headers: { Accept: "application/json" } }).then(r => r.json()).then(d => console.table(d.value.map(f => ({ Title: f.Title, Internal: f.InternalName, Type: f.TypeAsString }))))`;
+const VERIFY_SNIPPET = `var site = "${OGRP_SITE.replace(/^https:\/\/[^/]+/, '')}";
+fetch(site + "/_api/web/lists/getbytitle('${WEEKLY_UPDATES_LIST}')/fields?$select=Title,InternalName,TypeAsString&$filter=Hidden eq false", { headers: { Accept: "application/json" } }).then(r => r.json()).then(d => console.table(d.value.map(f => ({ Title: f.Title, Internal: f.InternalName, Type: f.TypeAsString }))))`;
 
-// No-PowerShell provisioning: creates the nine columns through the browser's SSO
-// session (REST + form digest). Idempotent — existing columns are reported, not duplicated.
+// No-PowerShell provisioning: creates the list (if missing) and its columns through
+// the browser's SSO session (REST + form digest). Idempotent — existing list/columns
+// are reported, not duplicated. Does NOT touch "ITSM Service Delivery" — that library
+// only holds the generated .docx file Flow B writes; this list is its metadata row.
 const PROVISION_SNIPPET = `(async function () {
-  var site = "/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology";
-  var list = "ITSM Service Delivery";
+  var site = "${OGRP_SITE.replace(/^https:\/\/[^/]+/, '')}";
+  var list = "${WEEKLY_UPDATES_LIST}";
   var digest = await fetch(site + "/_api/contextinfo", { method: "POST", headers: { Accept: "application/json;odata=verbose" } }).then(function (r) { return r.json(); }).then(function (d) { return d.d.GetContextWebInformation.FormDigestValue; });
+  var mk = await fetch(site + "/_api/web/lists", { method: "POST", headers: { Accept: "application/json;odata=verbose", "Content-Type": "application/json;odata=verbose", "X-RequestDigest": digest }, body: JSON.stringify({ __metadata: { type: "SP.List" }, Title: list, BaseTemplate: 100, Description: "System of record — one row per finalized week, written by Flow B." }) });
+  console.log(mk.ok ? "✓ list created" : mk.status === 400 ? "· list already exists" : "✗ list: HTTP " + mk.status);
   var base = site + "/_api/web/lists/getbytitle('" + list + "')/fields";
   var post = function (body) { return fetch(base, { method: "POST", headers: { Accept: "application/json;odata=verbose", "Content-Type": "application/json;odata=verbose", "X-RequestDigest": digest }, body: JSON.stringify(body) }); };
   var cols = [
@@ -50,6 +56,7 @@ const PROVISION_SNIPPET = `(async function () {
     { Title: "Major_Incidents", FieldTypeKind: 9 },
     { Title: "Alert_Detection", FieldTypeKind: 9 },
     { Title: "Window_Closed_At", FieldTypeKind: 4 },
+    { Title: "Report_Doc_Url", FieldTypeKind: 11 },
     { Title: "RAG_Status", FieldTypeKind: 6, Choices: { results: ["Green", "Yellow", "Red"] } }
   ];
   for (var i = 0; i < cols.length; i++) {
@@ -60,13 +67,13 @@ const PROVISION_SNIPPET = `(async function () {
     if (res.ok) { console.log("✓ " + c.Title + " created"); }
     else { var e = await res.json().catch(function () { return null; }); console.log("· " + c.Title + " — " + (res.status === 400 ? "already exists or invalid" : "HTTP " + res.status) + (e && e.error ? ": " + String(e.error.message.value).slice(0, 90) : "")); }
   }
-  console.log("Done. Refresh the Library Settings page — the nine columns should now appear under Columns.");
+  console.log("Done. Refresh the List Settings page — the ten columns should now appear under Columns.");
 })();`;
 
 const EXPECTED_COLS = [
   'Items_JSON · Note', 'Completed_Snapshot · Note', 'Priorities_Snapshot · Note',
   'RAG_Status · Choice (Green/Yellow/Red)', 'Major_Incidents · Number', 'Alert_Detection · Number',
-  'Window_Closed_At · DateTime', 'Metrics_JSON · Note', 'Metrics_Analysis · Note',
+  'Window_Closed_At · DateTime', 'Metrics_JSON · Note', 'Metrics_Analysis · Note', 'Report_Doc_Url · URL',
 ];
 
 const COLUMNS = [
@@ -80,6 +87,7 @@ const COLUMNS = [
   { name: 'Major_Incidents', type: 'Number', desc: 'Quick KPI captured from the card' },
   { name: 'Alert_Detection', type: 'Number', desc: 'Quick KPI captured from the card' },
   { name: 'Window_Closed_At', type: 'Date / Time', desc: 'Timestamp when the Mon 07:00 window finalized' },
+  { name: 'Report_Doc_Url', type: 'Hyperlink', desc: 'Link to the generated .docx in ITSM Service Delivery' },
 ];
 
 export const M365ConnectionKit: React.FC<Props> = ({ formData, overall, queueStatus, onVerifyQueue, recipient, setRecipient }) => {
@@ -91,6 +99,13 @@ export const M365ConnectionKit: React.FC<Props> = ({ formData, overall, queueSta
   const copyProv = () => { navigator.clipboard.writeText(PROVISION_SNIPPET); setCopiedProv(true); setTimeout(() => setCopiedProv(false), 2000); };
   const [copiedQueue, setCopiedQueue] = useState(false);
   const copyQueue = () => { navigator.clipboard.writeText(QUEUE_SNIPPET); setCopiedQueue(true); setTimeout(() => setCopiedQueue(false), 2000); };
+  const downloadRunner = () => {
+    const blob = new Blob([DISPATCH_RUNNER_HTML], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'dispatch-runner.html'; a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const live = queueStatus === 'ok';
 
@@ -142,9 +157,10 @@ export const M365ConnectionKit: React.FC<Props> = ({ formData, overall, queueSta
               <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold font-mono border ${
                 live ? 'bg-brand-soft text-brand-deep border-brand/40'
                 : queueStatus === 'missing' ? 'bg-crit-soft text-crit-deep border-crit/40'
+                : queueStatus === 'blocked' ? 'bg-warn-soft text-warn-deep border-warn/40'
                 : 'bg-xv-soft text-xv-deep border-xv/40'
               }`}>
-                {live ? '🟢 LIVE' : queueStatus === 'checking' ? 'CHECKING…' : queueStatus === 'missing' ? 'QUEUE MISSING' : '⚪ SANDBOX'}
+                {live ? '🟢 LIVE' : queueStatus === 'checking' ? 'CHECKING…' : queueStatus === 'missing' ? 'QUEUE MISSING' : queueStatus === 'blocked' ? 'UNREACHABLE' : '⚪ SANDBOX'}
               </span>
             </div>
             <p className="text-xs text-ink-soft leading-relaxed font-body">
@@ -164,6 +180,9 @@ export const M365ConnectionKit: React.FC<Props> = ({ formData, overall, queueSta
               {queueStatus === 'missing' && (
                 <span className="text-[11px] text-crit-deep font-body">Queue list not found — run the provisioning snippet below once, then Verify again.</span>
               )}
+              {queueStatus === 'blocked' && (
+                <span className="text-[11px] text-warn-deep font-body">Couldn’t reach SharePoint from this browser (cross-origin) — the studio isn’t being served from the OGRP site. Open it from the embedded SharePoint page, or use the dispatch runner fallback below.</span>
+              )}
             </div>
             <div className="space-y-1.5 pt-3 border-t border-line">
               <label className="block text-[10px] font-mono font-bold text-ink-soft uppercase tracking-wider">Send-to · Outlook To: line</label>
@@ -180,6 +199,23 @@ export const M365ConnectionKit: React.FC<Props> = ({ formData, overall, queueSta
             </div>
           </div>
 
+          {/* Cross-origin fallback — the popup runner writes with its own SSO instead of this page's */}
+          <div className={`panel p-6 space-y-4 ${queueStatus === 'blocked' ? 'ring-2 ring-warn/40' : ''}`}>
+            <div className="flex items-center justify-between gap-2 pb-3 border-b border-line flex-wrap">
+              <div className="flex items-center gap-2">
+                <FileWarning className="w-4 h-4 text-warn" />
+                <h3 className="text-xs font-extrabold text-ink uppercase tracking-wider font-display">Fallback · dispatch runner popup</h3>
+              </div>
+              {queueStatus === 'blocked' && <span className="text-[10px] font-mono text-warn-deep bg-warn-soft border border-warn/40 rounded px-2 py-0.5">use this now</span>}
+            </div>
+            <p className="text-xs text-ink-soft leading-relaxed font-body">
+              If the queue stays <strong className="text-ink">UNREACHABLE</strong> — the studio was opened as a raw file, or embedded on a page outside the OGRP site — Finalize can't write same-origin. Download this tiny runner page once and upload it next to <span className="font-mono text-tech">index.html</span> in the same Site Assets library. It's served BY SharePoint, so it always has same-origin SSO: the studio opens it in a popup, hands it the payload, and it does the write on the studio's behalf.
+            </p>
+            <button type="button" onClick={downloadRunner}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[11px] font-bold font-display bg-white hover:bg-mist text-ink border border-line transition active:scale-[0.98]">
+              <Terminal className="w-3.5 h-3.5 text-warn" /> Download dispatch-runner.html
+            </button>
+          </div>
 
           <div className="panel p-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-line">

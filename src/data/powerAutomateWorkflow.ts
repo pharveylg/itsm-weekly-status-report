@@ -2,64 +2,79 @@ import {
   FlowCardFormData, PowerAutomateStep,
   activeItems, completedItems, itemsByPillar, PILLARS, PillarType,
 } from '../types/itsm';
+import { DISPATCH_QUEUE_LIST, WEEKLY_UPDATES_LIST, SERVICE_DELIVERY_LIBRARY, OGRP_SITE, DEFAULT_RECIPIENT } from './sharepointConfig';
 
+/**
+ * "Flow B" — the flow the studio actually depends on. The studio itself is the
+ * weekly UI (FlowCard → Merge Studio → Executive Report); on Finalize it writes
+ * one plain SharePoint list item (a dispatch ticket) to ITSM_Dispatch_Queue —
+ * a native list-create, so it's invisible to DLP and needs no HTTP-trigger
+ * exception. This flow wakes on that new item and does everything downstream:
+ * generates the weekly Word doc, writes the system-of-record row, flips the
+ * Teams card to closed, and sends the executive digest.
+ */
 export const POWER_AUTOMATE_STEPS: PowerAutomateStep[] = [
   {
-    id: 'step_1', title: '1. Recurrence · Monday 08:00 — open the window', type: 'trigger', connector: 'PowerAutomate',
-    description: 'Fires every Monday 08:00. Seeds the card with last week’s carry (active) + closed wins (Section 1).',
-    details: 'Initializes the submission window [Mon 08:00 → next Mon 07:00] and posts a fresh FlowCard pre-filled from the SharePoint snapshot of the previous week.',
-    inputs: { Frequency: 'Week', Interval: '1', WeekDay: 'Monday', Time: '08:00', Window_Close: 'next Monday 07:00' },
-    icon: 'Clock',
-  },
-  {
-    id: 'step_2', title: '2. Post Adaptive Card & wait (window stays open)', type: 'action', connector: 'Teams',
-    description: 'Section 1 = completed items w/ an Archive tick · Section 2 = active items w/ a Complete toggle + RAG + new-entry slots.',
-    details: 'The card remains live and editable until the window closes. Each item round-trips its {text, rag, complete, archived, pillar}.',
-    inputs: { 'Post as': 'Flow bot', 'Post in': 'Channel: ITSM Weekly Updates', 'Wait timeout': 'until Window_Close (Mon 07:00)' },
-    outputs: ['data.items[] { id, pillar, text, rag, complete, archived }', 'data.majorIncidents', 'data.alertDetectionRate'],
-    icon: 'MessageSquare',
-  },
-  {
-    id: 'step_3', title: '3. Delay until window close · Monday 07:00', type: 'action', connector: 'Control',
-    description: 'Holds the branch open for the full 6d 23h window, then releases to finalize.',
-    details: 'At Mon 07:00 the card flips to “Closed for submission”. Late edits are rejected; the captured snapshot is finalized.',
-    inputs: { Wait_until: '@{addDays(startOfWeek(utcNow()), 7, "yyyy-MM-ddT07:00:00Z")}' },
+    id: 'step_1', title: '1. When an item is created · ITSM_Dispatch_Queue', type: 'trigger', connector: 'SharePoint',
+    description: 'Wakes the instant the studio writes a dispatch ticket on Finalize. Plain list trigger — no HTTP endpoint, no DLP exception.',
+    details: 'The ticket\'s Payload column holds the whole finalized week as JSON: items[], metrics[], snapshots, and the auto-computed overall RAG. This is the only thing Flow B is coupled to — the studio never calls Power Automate directly.',
+    inputs: { Site: OGRP_SITE, List: DISPATCH_QUEUE_LIST },
     icon: 'Zap',
   },
   {
-    id: 'step_4', title: '4. Parse response → item array', type: 'action', connector: 'Dataverse',
-    description: 'Strongly-types the items[] payload (per-item RAG, complete, archived, pillar).',
-    details: 'Feeds the Compose + SharePoint actions. Archived items are separated for the history write; active+completed drive the report.',
-    inputs: { Content: "@body('Post_card')?['data']", Schema: 'items[]: { id, pillar, text, rag, complete, archived }' },
+    id: 'step_2', title: '2. Parse JSON · unpack the dispatch payload', type: 'action', connector: 'Control',
+    description: 'Strongly-types Title/Payload into reportWeek, overallRag, items[], metrics[], and the pre-built human-readable snapshots.',
+    details: 'Feeds every downstream action. Nothing is recomputed here — the studio already did the RAG rollup and the completed/priorities snapshots before dispatch; Flow B just persists and distributes them.',
+    inputs: { Content: "@triggerOutputs()?['body/Payload']", Schema: 'reportWeek, overallRag, ragStatus, majorIncidents, alertDetection, completedSnapshot, prioritiesSnapshot, itemsJson, metricsJson, metricsAnalysis' },
     icon: 'Code',
   },
   {
-    id: 'step_5', title: '5. Compose · auto Overall RAG', type: 'action', connector: 'Control',
-    description: 'Worst of (active items’ RAGs ∪ KPI RAGs). Completed & archived excluded.',
-    details: 'if contains red ⇒ red · else if contains yellow ⇒ yellow · else green. Never a manual field.',
-    inputs: { Expression: "@if(contains(join(...activeRags∪kpiRags,','),'red'),'red',if(contains(...,'yellow'),'yellow','green'))" },
-    outputs: ['OverallRag'],
-    icon: 'Zap',
+    id: 'step_3', title: '3. Populate Word template · weekly report', type: 'action', connector: 'PowerAutomate',
+    description: 'Fills a .dotx template (Completed / Priorities / KPI table / Remarks) with this week\'s fields via Word Online (Business).',
+    details: 'Requires a one-time template upload to the ITSM Service Delivery library with matching content controls (reportWeek, overallRag, completedSnapshot, prioritiesSnapshot, metricsAnalysis). Standard connector — no premium license needed.',
+    inputs: { Location: SERVICE_DELIVERY_LIBRARY, TemplateFile: 'ITSM_Weekly_Report_Template.dotx (upload once, then paste its file ID here)' },
+    icon: 'MessageSquare',
   },
   {
-    id: 'step_6', title: '6. SharePoint · write weekly item', type: 'action', connector: 'SharePoint',
-    description: 'Persists Items_JSON + human snapshots + auto RAG + window-closed timestamp.',
-    details: 'One row per week in ITSM_Weekly_Updates; the Items_JSON column is the round-trippable source for next Monday’s seed.',
-    inputs: { List: 'ITSM_Weekly_Updates', Items_JSON: '@{...items}', RAG_Status: "@outputs('Compose_Overall')", Window_Closed_At: '@{utcNow()}' },
+    id: 'step_4', title: '4. Create file · ITSM Service Delivery', type: 'action', connector: 'SharePoint',
+    description: 'Saves the populated document as this week\'s report; the filename carries the week label so re-runs never collide.',
+    details: 'Output is the file\'s server-relative path/ID, captured for the Report_Doc_Url column on the next step and for the Teams/Outlook deep-links.',
+    inputs: { Library: SERVICE_DELIVERY_LIBRARY, 'File name': "ITSM-Weekly-@{body('Parse_JSON')?['reportWeek']}.docx" },
+    outputs: ['Report_Doc_Url'],
     icon: 'Database',
   },
   {
-    id: 'step_7', title: '7. Post “Closed for submission” card', type: 'action', connector: 'Teams',
-    description: 'Locks the channel card read-only and stamps the finalized RAG.',
-    details: 'Replaces the editable card with a published summary; inputs disabled; shows “reopens Mon 08:00”.',
+    id: 'step_5', title: '5. Create item · ITSM_Weekly_Updates', type: 'action', connector: 'SharePoint',
+    description: 'Writes the system-of-record row: Items_JSON, Metrics_JSON, snapshots, auto RAG, window-closed timestamp, and a link to the doc.',
+    details: 'One row per week. Items_JSON is the round-trippable source the studio reads back next Monday to seed the FlowCard\'s carry-forward.',
+    inputs: {
+      List: WEEKLY_UPDATES_LIST,
+      Title: "@{body('Parse_JSON')?['reportWeek']}",
+      Items_JSON: "@{body('Parse_JSON')?['itemsJson']}",
+      Metrics_JSON: "@{body('Parse_JSON')?['metricsJson']}",
+      Metrics_Analysis: "@{body('Parse_JSON')?['metricsAnalysis']}",
+      Completed_Snapshot: "@{body('Parse_JSON')?['completedSnapshot']}",
+      Priorities_Snapshot: "@{body('Parse_JSON')?['prioritiesSnapshot']}",
+      RAG_Status: "@{body('Parse_JSON')?['ragStatus']}",
+      Major_Incidents: "@{body('Parse_JSON')?['majorIncidents']}",
+      Alert_Detection: "@{body('Parse_JSON')?['alertDetection']}",
+      Window_Closed_At: '@{utcNow()}',
+      Report_Doc_Url: "@{outputs('Create_file')?['Path']}",
+    },
+    icon: 'Database',
+  },
+  {
+    id: 'step_6', title: '6. Post “Closed for submission” card', type: 'action', connector: 'Teams',
+    description: 'Locks the channel card read-only and stamps the finalized RAG, with a link to the new SharePoint row and doc.',
+    details: 'Replaces the editable card with a published summary; shows “reopens Mon 08:00”.',
     inputs: { 'Post in': 'Channel: ITSM Weekly Updates', Theme: 'Closed / read-only' },
     icon: 'Send',
   },
   {
-    id: 'step_8', title: '8. Outlook · executive digest', type: 'action', connector: 'Outlook',
-    description: 'HTML digest: completed wins, live priorities w/ RAG, KPI table, auto overall.',
-    details: 'Sent to the configured recipient (single test mailbox while wiring) with a deep-link to the SharePoint row.',
-    inputs: { To: 'patrickharvey.gaddi@ingrammicro.com', Subject: '📊 ITSM Weekly Status – @{reportWeek} | RAG @{OverallRag}' },
+    id: 'step_7', title: '7. Outlook · executive digest', type: 'action', connector: 'Outlook',
+    description: 'HTML digest: completed wins, live priorities w/ RAG, KPI table, auto overall, deep-link to the SharePoint row.',
+    details: 'To: comes from the studio\'s "Send-to" field (travels in the dispatch payload) — whatever you set on the M365 Connections tab is where this actually goes. Falls back to the test address below only if that was ever empty. Keep it on one test mailbox until this has passed repeated tests.',
+    inputs: { To: `@{coalesce(recipient, '${DEFAULT_RECIPIENT}')}`, Subject: '📊 ITSM Weekly Status – @{reportWeek} | RAG @{ragStatus}' },
     icon: 'Mail',
   },
 ];
@@ -151,79 +166,97 @@ export function generateAdaptiveCardJson(formData: FlowCardFormData, overall: st
   };
 }
 
-/* ── Cloud Flow definition (Logic Apps schema) ─────────────────────────── */
+/* ── Cloud Flow definition (Logic Apps schema) — Flow B ────────────────────
+ * Triggers on ITSM_Dispatch_Queue, not on a recurrence — the studio itself
+ * owns the weekly UI and the RAG rollup; this flow only persists + distributes
+ * what Finalize already computed. Import this at make.powerautomate.com,
+ * connect SharePoint/Teams/Outlook, then paste the uploaded template's file ID
+ * into Populate_Word_Template before turning it on. */
 export function generatePowerAutomateFlowDefinitionJson(): object {
-  const itemSchema = {
-    type: 'object',
-    properties: {
-      id: { type: 'string' }, pillar: { type: 'string', enum: ['People', 'Process', 'Technology'] },
-      text: { type: 'string' }, rag: { type: 'string', enum: ['green', 'yellow', 'red', 'na'] },
-      complete: { type: 'boolean' }, archived: { type: 'boolean' },
-    },
-  };
   return {
     $schema: 'https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#',
     contentVersion: '3.0.0.0',
     parameters: {
       $connections: { defaultValue: {}, type: 'Object' },
-      SharePointSiteUrl: { defaultValue: 'https://ingrammicro.sharepoint.com/sites/ITSM-Operations', type: 'String' },
+      SharePointSiteUrl: { defaultValue: OGRP_SITE, type: 'String' },
       TeamsChannelId: { defaultValue: '19:itsm-weekly-updates-channel@thread.tacv2', type: 'String' },
+      WordTemplateFileId: { defaultValue: 'PASTE_TEMPLATE_FILE_ID_AFTER_UPLOAD', type: 'String' },
     },
     triggers: {
-      Recurrence_Monday_0800_Open_Window: {
-        type: 'Recurrence',
-        recurrence: { frequency: 'Week', interval: 1, schedule: { weekDays: ['Monday'], hours: ['8'], minutes: [0] }, timeZone: 'UTC' },
+      When_a_dispatch_ticket_is_created: {
+        type: 'OpenApiConnection',
+        inputs: {
+          host: { connectionName: 'shared_sharepointonline', operationId: 'GetOnNewItems', apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline' },
+          parameters: { dataset: "@parameters('SharePointSiteUrl')", table: DISPATCH_QUEUE_LIST },
+        },
       },
     },
     actions: {
-      Post_Adaptive_Card_and_Wait: {
-        type: 'OpenApiConnectionWebhook',
-        inputs: {
-          host: { connectionName: 'shared_teams', operationId: 'PostAdaptiveCardAndWaitForResponse', apiId: '/providers/Microsoft.PowerApps/apis/shared_teams' },
-          parameters: { poster: 'Flow bot', location: 'Channel', 'body/recipient/groupId': "@parameters('TeamsChannelId')", 'body/card': "@variables('AdaptiveCardBody')" },
-        },
-        runAfter: {},
-      },
-      Delay_until_Window_Close_Mon_0700: {
-        type: 'Wait',
-        inputs: { until: "@addDays(startOfWeek(utcNow(),'Monday'), 7, 'yyyy-MM-ddT07:00:00Z')" },
-        runAfter: { Post_Adaptive_Card_and_Wait: ['Succeeded', 'TimedOut'] },
-      },
-      Parse_Items_Response: {
+      Parse_JSON: {
         type: 'ParseJson',
         inputs: {
-          content: "@body('Post_Adaptive_Card_and_Wait')?['data']",
+          content: "@triggerOutputs()?['body/Payload']",
           schema: {
             type: 'object',
             properties: {
-              reportWeek: { type: 'string' },
-              majorIncidents: { type: 'number' }, alertDetectionRate: { type: 'number' },
-              items: { type: 'array', items: itemSchema },
+              reportWeek: { type: 'string' }, recipient: { type: 'string' }, overallRag: { type: 'string' }, ragStatus: { type: 'string' },
+              majorIncidents: { type: 'number' }, alertDetection: { type: 'number' },
+              completedCount: { type: 'number' }, activeCount: { type: 'number' },
+              completedSnapshot: { type: 'string' }, prioritiesSnapshot: { type: 'string' },
+              metricsAnalysis: { type: 'string' }, itemsJson: { type: 'string' }, metricsJson: { type: 'string' },
             },
           },
         },
-        runAfter: { Delay_until_Window_Close_Mon_0700: ['Succeeded'] },
+        runAfter: {},
       },
-      Compose_Auto_Overall_RAG: {
-        type: 'Compose',
-        inputs: "@if(contains(join(variables('ActiveAndKpiRags'),','),'red'),'red',if(contains(join(variables('ActiveAndKpiRags'),','),'yellow'),'yellow','green'))",
-        runAfter: { Parse_Items_Response: ['Succeeded'] },
+      Populate_Word_Template: {
+        type: 'OpenApiConnection',
+        inputs: {
+          host: { connectionName: 'shared_wordonlinebusiness', operationId: 'PopulateWordTemplate', apiId: '/providers/Microsoft.PowerApps/apis/shared_wordonlinebusiness' },
+          parameters: {
+            source: 'SharePoint', dataset: "@parameters('SharePointSiteUrl')", table: SERVICE_DELIVERY_LIBRARY,
+            id: "@parameters('WordTemplateFileId')",
+            templateParameters: {
+              reportWeek: "@{body('Parse_JSON')?['reportWeek']}", overallRag: "@{body('Parse_JSON')?['ragStatus']}",
+              completedSnapshot: "@{body('Parse_JSON')?['completedSnapshot']}", prioritiesSnapshot: "@{body('Parse_JSON')?['prioritiesSnapshot']}",
+              metricsAnalysis: "@{body('Parse_JSON')?['metricsAnalysis']}",
+            },
+          },
+        },
+        runAfter: { Parse_JSON: ['Succeeded'] },
+      },
+      Create_file_in_Service_Delivery: {
+        type: 'OpenApiConnection',
+        inputs: {
+          host: { connectionName: 'shared_sharepointonline', operationId: 'CreateFile', apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline' },
+          parameters: {
+            dataset: "@parameters('SharePointSiteUrl')", folderPath: `/${SERVICE_DELIVERY_LIBRARY}`,
+            name: "ITSM-Weekly-@{body('Parse_JSON')?['reportWeek']}.docx",
+            body: "@body('Populate_Word_Template')",
+          },
+        },
+        runAfter: { Populate_Word_Template: ['Succeeded'] },
       },
       Create_SharePoint_Weekly_Item: {
         type: 'OpenApiConnection',
         inputs: {
           host: { connectionName: 'shared_sharepointonline', operationId: 'PostItem', apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline' },
           parameters: {
-            dataset: "@parameters('SharePointSiteUrl')", table: 'ITSM_Weekly_Updates',
-            "item/Title": "@{body('Parse_Items_Response')?['reportWeek']}",
-            "item/Items_JSON": "@{body('Parse_Items_Response')?['items']}",
-            "item/RAG_Status": "@outputs('Compose_Auto_Overall_RAG')",
-            "item/Metrics_JSON": "@variables('MetricsJson')",
-            "item/Metrics_Analysis": "@variables('MetricsAnalysis')",
+            dataset: "@parameters('SharePointSiteUrl')", table: WEEKLY_UPDATES_LIST,
+            "item/Title": "@{body('Parse_JSON')?['reportWeek']}",
+            "item/Items_JSON": "@{body('Parse_JSON')?['itemsJson']}",
+            "item/Metrics_JSON": "@{body('Parse_JSON')?['metricsJson']}",
+            "item/Metrics_Analysis": "@{body('Parse_JSON')?['metricsAnalysis']}",
+            "item/Completed_Snapshot": "@{body('Parse_JSON')?['completedSnapshot']}",
+            "item/Priorities_Snapshot": "@{body('Parse_JSON')?['prioritiesSnapshot']}",
+            "item/RAG_Status": "@{body('Parse_JSON')?['ragStatus']}",
+            "item/Major_Incidents": "@{body('Parse_JSON')?['majorIncidents']}",
+            "item/Alert_Detection": "@{body('Parse_JSON')?['alertDetection']}",
             "item/Window_Closed_At": '@{utcNow()}',
+            "item/Report_Doc_Url": "@{outputs('Create_file_in_Service_Delivery')?['body/Path']}",
           },
         },
-        runAfter: { Compose_Auto_Overall_RAG: ['Succeeded'] },
+        runAfter: { Create_file_in_Service_Delivery: ['Succeeded'] },
       },
       Post_Closed_For_Submission_Card: {
         type: 'OpenApiConnection',
@@ -238,9 +271,12 @@ export function generatePowerAutomateFlowDefinitionJson(): object {
         inputs: {
           host: { connectionName: 'shared_office365', operationId: 'SendEmailV2', apiId: '/providers/Microsoft.PowerApps/apis/shared_office365' },
           parameters: {
-            "emailMessage/To": 'patrickharvey.gaddi@ingrammicro.com',
-            "emailMessage/Subject": "📊 ITSM Weekly Status – @{body('Parse_Items_Response')?['reportWeek']} | RAG @{upper(outputs('Compose_Auto_Overall_RAG'))}",
-            "emailMessage/Body": '<p>Weekly ITSM status finalized at window close. KPI snapshot, per-metric analyst reads, completed wins and live priorities are appended below; the full item array + notes are archived to SharePoint (Metrics_JSON / Items_JSON).</p>',
+            // The studio's recipient field is authoritative — it travels in the
+            // dispatch payload. This only falls back to DEFAULT_RECIPIENT if the
+            // field was ever somehow empty when Finalize ran.
+            "emailMessage/To": `@{coalesce(body('Parse_JSON')?['recipient'], '${DEFAULT_RECIPIENT}')}`,
+            "emailMessage/Subject": "📊 ITSM Weekly Status – @{body('Parse_JSON')?['reportWeek']} | RAG @{toUpper(body('Parse_JSON')?['ragStatus'])}",
+            "emailMessage/Body": '<p>Weekly ITSM status finalized. KPI snapshot, remarks, completed wins and live priorities are appended below; the full item array + the generated Word doc are archived to SharePoint.</p>',
           },
         },
         runAfter: { Post_Closed_For_Submission_Card: ['Succeeded'] },
@@ -249,16 +285,20 @@ export function generatePowerAutomateFlowDefinitionJson(): object {
   };
 }
 
-export const SHAREPOINT_PNP_SCRIPT = `# 🚀 PnP PowerShell — extend the EXISTING "ITSM Service Delivery" library
-# Target: https://ingrammicro.sharepoint.com/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology
-# Library: ITSM Service Delivery  (document library — NOT a custom list)
+export const SHAREPOINT_PNP_SCRIPT = `# 🚀 PnP PowerShell — provision the "ITSM_Weekly_Updates" list (creates it if missing)
+# Target: ${OGRP_SITE}
+# List: ${WEEKLY_UPDATES_LIST}  (custom list — the system-of-record row per week)
+#
+# This is what Flow B (When an item is created on ${DISPATCH_QUEUE_LIST}) writes to.
+# It does NOT touch "${SERVICE_DELIVERY_LIBRARY}" — that library only holds the
+# generated .docx file; Flow B links to it via Report_Doc_Url below.
 #
 # PREREQUISITE (run once as Administrator if Connect-PnPOnline is not recognized):
 #   Install-Module PnP.PowerShell -Scope CurrentUser -Force
 #   # If that fails under corporate policy, use -Scope AllUsers as Admin, or
 #   # add the columns manually in the SharePoint UI (see walkthrough).
 #
-# Safe to re-run: existing columns are skipped, not duplicated.
+# Safe to re-run: existing list/columns are skipped, not duplicated.
 
 if (-not (Get-Module -ListAvailable -Name PnP.PowerShell)) {
     Write-Host "❌ PnP.PowerShell is not installed." -ForegroundColor Red
@@ -268,31 +308,32 @@ if (-not (Get-Module -ListAvailable -Name PnP.PowerShell)) {
 }
 Import-Module PnP.PowerShell -ErrorAction Stop
 
-Connect-PnPOnline -Url "https://ingrammicro.sharepoint.com/sites/OGRP-TigerTeam-IOCPhilippines-InformationTechnology" -Interactive
+Connect-PnPOnline -Url "${OGRP_SITE}" -Interactive
 
-$library = "ITSM Service Delivery"
+$list = "${WEEKLY_UPDATES_LIST}"
 
-# Confirm the library exists before touching anything
+# Create the list if it doesn't exist yet — a plain generic list (BaseTemplate 100)
 try {
-    $null = Get-PnPList -Identity $library -ErrorAction Stop
-    Write-Host "Found library '$library'." -ForegroundColor Cyan
+    $null = Get-PnPList -Identity $list -ErrorAction Stop
+    Write-Host "Found list '$list'." -ForegroundColor Cyan
 } catch {
-    Write-Host "❌ Library '$library' not found on this site. Check the name and try again." -ForegroundColor Red
-    return
+    Write-Host "List '$list' not found — creating it..." -ForegroundColor Yellow
+    New-PnPList -Title $list -Template GenericList | Out-Null
+    Write-Host "✓ List '$list' created." -ForegroundColor Green
 }
 
 function Add-ColumnIfMissing {
     param([string]$DisplayName, [string]$InternalName, [string]$Type, [string[]]$Choices)
-    $existing = Get-PnPField -List $library -Identity $InternalName -ErrorAction SilentlyContinue
+    $existing = Get-PnPField -List $list -Identity $InternalName -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "  · $InternalName already exists — skipped" -ForegroundColor DarkGray
         return
     }
     try {
         if ($Choices) {
-            Add-PnPField -List $library -DisplayName $DisplayName -InternalName $InternalName -Type $Type -Choices $Choices | Out-Null
+            Add-PnPField -List $list -DisplayName $DisplayName -InternalName $InternalName -Type $Type -Choices $Choices | Out-Null
         } else {
-            Add-PnPField -List $library -DisplayName $DisplayName -InternalName $InternalName -Type $Type | Out-Null
+            Add-PnPField -List $list -DisplayName $DisplayName -InternalName $InternalName -Type $Type | Out-Null
         }
         Write-Host "  ✓ $InternalName added" -ForegroundColor Green
     } catch {
@@ -300,7 +341,7 @@ function Add-ColumnIfMissing {
     }
 }
 
-Write-Host "Provisioning columns on '$library' ..." -ForegroundColor Cyan
+Write-Host "Provisioning columns on '$list' ..." -ForegroundColor Cyan
 
 Add-ColumnIfMissing -DisplayName "Items_JSON"          -InternalName "Items_JSON"          -Type "Note"
 Add-ColumnIfMissing -DisplayName "Completed_Snapshot"  -InternalName "Completed_Snapshot"  -Type "Note"
@@ -311,10 +352,14 @@ Add-ColumnIfMissing -DisplayName "Alert_Detection"     -InternalName "Alert_Dete
 Add-ColumnIfMissing -DisplayName "Window_Closed_At"    -InternalName "Window_Closed_At"    -Type "DateTime"
 Add-ColumnIfMissing -DisplayName "Metrics_JSON"        -InternalName "Metrics_JSON"        -Type "Note"
 Add-ColumnIfMissing -DisplayName "Metrics_Analysis"    -InternalName "Metrics_Analysis"    -Type "Note"
+Add-ColumnIfMissing -DisplayName "Report_Doc_Url"      -InternalName "Report_Doc_Url"      -Type "URL"
 
 Write-Host ""
-Write-Host "Done. Open the library → + Add column (or List settings → Columns)" -ForegroundColor Cyan
+Write-Host "Done. Open the list → + Add column (or List settings → Columns)" -ForegroundColor Cyan
 Write-Host "and confirm these internal names exist: Items_JSON, Metrics_JSON," -ForegroundColor Cyan
 Write-Host "Metrics_Analysis, RAG_Status, Window_Closed_At, Major_Incidents," -ForegroundColor Cyan
-Write-Host "Alert_Detection, Completed_Snapshot, Priorities_Snapshot." -ForegroundColor Cyan
+Write-Host "Alert_Detection, Completed_Snapshot, Priorities_Snapshot, Report_Doc_Url." -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Note: '${SERVICE_DELIVERY_LIBRARY}' is untouched by this script — it's the" -ForegroundColor Cyan
+Write-Host "existing document library where Flow B saves the generated .docx file." -ForegroundColor Cyan
 `;
