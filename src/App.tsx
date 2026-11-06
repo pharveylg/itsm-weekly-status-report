@@ -15,6 +15,7 @@ import { buildMergedItems, acceptedAsFlowItems } from './utils/mergeEngine';
 import { recalcMetric } from './utils/rag-ui';
 import { generatePowerAutomateFlowDefinitionJson } from './data/powerAutomateWorkflow';
 import { OGRP_SITE, DISPATCH_QUEUE_LIST, DISPATCH_RUNNER_URL, DEFAULT_RECIPIENT } from './data/sharepointConfig';
+import { isValidEmail } from './utils/validation';
 
 type TabKey = 'flowcard-ingram' | 'flowcard-capgemini' | 'team-doc' | 'merge-studio' | 'flow-builder' | 'executive-report' | 'adaptive-json' | 'm365-connections' | 'deliverables';
 interface LogEntry { timestamp: string; step: string; status: 'pending' | 'success' | 'running'; }
@@ -41,6 +42,30 @@ const nextWeekLabel = (s: string) => {
 // When it's opened from anywhere else, the fetch fails cross-origin — the
 // popup runner (dispatch-runner.html) is the fallback for exactly that case.
 const QUEUE_LIST = DISPATCH_QUEUE_LIST;
+
+// ── Draft persistence ──────────────────────────────────────────────────────
+// The working copy is saved to this browser on every change, so a reload, a
+// lost SharePoint session, or a network drop never throws away edits. Storage
+// can be blocked (private mode, quota), so every access is guarded and the
+// studio keeps working in memory if it fails.
+const DRAFT_KEY = 'itsm_studio_draft_v1';
+interface Draft {
+  ingramData: FlowCardFormData;
+  capgeminiData: FlowCardFormData;
+  rawMetrics: MetricRow[];
+  mergedItems: MergedItem[];
+}
+function loadDraft(): Partial<Draft> {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    return raw ? (JSON.parse(raw) as Partial<Draft>) : {};
+  } catch {
+    return {};
+  }
+}
+function saveDraft(draft: Draft) {
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch { /* blocked or full — keep going in memory */ }
+}
 
 // A same-origin/CORS failure surfaces as a generic TypeError ("Failed to
 // fetch") with no HTTP status — that's how we tell "wrong origin" apart from
@@ -82,10 +107,27 @@ function writeDispatchTicketViaPopup(payload: unknown): Promise<void> {
 }
 
 export function App() {
+  const [restored] = useState<Partial<Draft>>(loadDraft);
   const [activeTab, setActiveTab] = useState<TabKey>('flowcard-ingram');
-  const [ingramData, setIngramData] = useState<FlowCardFormData>(INITIAL_INGRAM_DATA);
-  const [capgeminiData, setCapgeminiData] = useState<FlowCardFormData>(INITIAL_CAPGEMINI_DATA);
-  const [mergedItems, setMergedItems] = useState<MergedItem[]>(() => buildMergedItems(INITIAL_INGRAM_DATA.items, INITIAL_CAPGEMINI_DATA.items));
+  const [ingramData, setIngramData] = useState<FlowCardFormData>(() => restored.ingramData ?? INITIAL_INGRAM_DATA);
+  const [capgeminiData, setCapgeminiData] = useState<FlowCardFormData>(() => restored.capgeminiData ?? INITIAL_CAPGEMINI_DATA);
+  const [mergedItems, setMergedItems] = useState<MergedItem[]>(() => restored.mergedItems ?? buildMergedItems(INITIAL_INGRAM_DATA.items, INITIAL_CAPGEMINI_DATA.items));
+  const [rawMetrics, setRawMetrics] = useState<MetricRow[]>(() => restored.rawMetrics ?? METRICS_DATA);
+
+  // Save the draft whenever it changes, so nothing is lost before an auth teardown.
+  useEffect(() => {
+    saveDraft({ ingramData, capgeminiData, rawMetrics, mergedItems });
+  }, [ingramData, capgeminiData, rawMetrics, mergedItems]);
+
+  // Connectivity: the studio stays usable offline, but nothing can be dispatched.
+  const [online, setOnline] = useState<boolean>(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  useEffect(() => {
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener('online', up);
+    window.addEventListener('offline', down);
+    return () => { window.removeEventListener('online', up); window.removeEventListener('offline', down); };
+  }, []);
 
   // The "formData" used by the Report/Deliverables/JSON tabs is derived from the merge:
   // accepted items become the canonical item list for the final report.
@@ -102,7 +144,6 @@ export function App() {
     // Updates from the Report tab (e.g. remarks) go to the Ingram form data
     setIngramData(fn);
   };
-  const [rawMetrics, setRawMetrics] = useState<MetricRow[]>(METRICS_DATA);
   const [isSimulating, setIsSimulating] = useState(false);
   const [submissionLog, setSubmissionLog] = useState<LogEntry[]>(INITIAL_LOG);
   const [finalizedAt, setFinalizedAt] = useState<number | null>(null);
@@ -160,6 +201,17 @@ export function App() {
     if (isSimulating || locked) return;
     setIsSimulating(true);
     const now = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
+
+    // Validate before anything leaves the browser. Each guard leaves the draft intact.
+    if (!navigator.onLine) {
+      setSubmissionLog(prev => [...prev, { timestamp: now(), step: '⚠ Offline — nothing was sent. Reconnect, then press Finalize again. Your draft is saved.', status: 'success' }]);
+      return;
+    }
+    if (!isValidEmail(recipient)) {
+      setSubmissionLog(prev => [...prev, { timestamp: now(), step: '⚠ Recipient is not a valid email address — fix it on the M365 Connections tab. Nothing was sent.', status: 'success' }]);
+      return;
+    }
+
     const a = activeItems(formData.items).length;
     const c = formData.items.filter(i => i.complete && !i.archived).length;
 
@@ -224,7 +276,11 @@ export function App() {
         headers: { Accept: 'application/json;odata=verbose' },
         credentials: 'include',
       });
-      if (!digRes.ok) throw new Error(`Auth failed (HTTP ${digRes.status}). Reload the page and sign back in.`);
+      // Session expiry (401): the draft is already saved, so the fix is just re-signing in.
+      if (digRes.status === 401) throw new Error('Your SharePoint session expired. Your draft is saved in this browser — reload the page, sign in again, then press Finalize. Nothing was sent.');
+      // Permission denied (403): signed in, but this account can't write to the site.
+      if (digRes.status === 403) throw new Error('Permission denied (HTTP 403) for the OGRP site. Ask the site owner for Contribute access, then retry. Nothing was sent.');
+      if (!digRes.ok) throw new Error(`Couldn't reach SharePoint (HTTP ${digRes.status}). Nothing was sent — retry once the connection is healthy.`);
       const digest = (await digRes.json()).d.GetContextWebInformation.FormDigestValue;
 
       // List entity type
@@ -235,7 +291,8 @@ export function App() {
         setQueueStatus('missing');
         throw new Error(`Queue list "${QUEUE_LIST}" not found — provision it on the M365 Connections tab first.`);
       }
-      if (!etRes.ok) throw new Error(`Cannot read queue list (HTTP ${etRes.status}).`);
+      if (etRes.status === 403) throw new Error(`Permission denied reading "${QUEUE_LIST}" (HTTP 403). Ask the list owner for access, then retry. Nothing was sent.`);
+      if (!etRes.ok) throw new Error(`Cannot read queue list (HTTP ${etRes.status}). Nothing was sent — retry once SharePoint responds.`);
       const entityType = (await etRes.json()).d.ListItemEntityTypeFullName;
 
       // Write the item
@@ -253,7 +310,8 @@ export function App() {
       if (!res.ok) {
         const errBody = await res.json().catch(() => null);
         const detail = errBody?.error?.message?.value ? ` — ${String(errBody.error.message.value).slice(0, 140)}` : '';
-        throw new Error(`Queue write failed (HTTP ${res.status})${detail}`);
+        if (res.status === 403) throw new Error(`Permission denied writing to "${QUEUE_LIST}" (HTTP 403). Ask the list owner for Contribute access, then retry. Nothing was sent.`);
+        throw new Error(`Queue write failed (HTTP ${res.status})${detail}. Nothing was sent — your draft is kept.`);
       }
 
       markDispatched();
@@ -280,6 +338,7 @@ export function App() {
         setSubmissionLog(prev => [
           ...prev.map(l => (l.step.includes('Writing dispatch ticket') ? { ...l, status: 'pending' as const } : l)),
           { timestamp: now(), step: `❌ ${msg}`, status: 'success' },
+          { timestamp: now(), step: 'Your draft is saved. Fix the cause above, then press Finalize again.', status: 'success' },
         ]);
       }
     } finally {
@@ -320,6 +379,7 @@ export function App() {
     URL.revokeObjectURL(url);
   };
   const handleReset = () => {
+    // Resetting overwrites the saved draft (the save effect writes the defaults back).
     setFormData(INITIAL_FLOWCARD_DATA); setRawMetrics(METRICS_DATA);
     setPhase('open'); setNowMs(OPEN_MS + 1000 * 60 * 60 * 52); setFinalizedAt(null); setSubmissionLog(INITIAL_LOG);
   };
@@ -330,6 +390,11 @@ export function App() {
       <div className="relative z-10">
         <Header activeTab={activeTab} setActiveTab={setActiveTab} onDownloadFlowJson={handleDownloadFlowJson} onResetToReportData={handleReset} overallRag={overall} />
       </div>
+      {!online && (
+        <div role="status" className="relative z-10 bg-warn-soft border-b border-warn/40 text-warn-deep text-xs font-body px-4 sm:px-6 lg:px-8 py-2 text-center">
+          <strong className="font-display">You’re offline.</strong> Edits are saved in this browser. Dispatch is paused until the connection returns.
+        </div>
+      )}
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
         <div key={activeTab} className="animate-fade-up">
