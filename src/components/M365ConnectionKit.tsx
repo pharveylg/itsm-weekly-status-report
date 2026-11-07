@@ -4,6 +4,7 @@ import { OGRP_SITE, DISPATCH_QUEUE_LIST, WEEKLY_UPDATES_LIST } from '../data/sha
 import { DISPATCH_RUNNER_HTML } from '../data/dispatchRunner';
 import { FlowCardFormData, RagStatus, activeItems, completedItems } from '../types/itsm';
 import { ragDot } from '../utils/rag-ui';
+import { isValidEmail } from '../utils/validation';
 import { BrandLockup } from './BrandLockup';
 import { Terminal, Copy, Check, Mail, Layers, Table, Zap, FileWarning } from 'lucide-react';
 
@@ -186,13 +187,30 @@ export const M365ConnectionKit: React.FC<Props> = ({ formData, overall, queueSta
             </div>
             <div className="space-y-1.5 pt-3 border-t border-line">
               <label className="block text-[10px] font-mono font-bold text-ink-soft uppercase tracking-wider">Send-to · Outlook To: line</label>
-              <input
-                type="email"
-                value={recipient}
-                onChange={e => setRecipient(e.target.value)}
-                placeholder="recipient@ingrammicro.com"
-                className="w-full bg-paper border border-line rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-soft/40 focus:ring-2 focus:ring-brand font-mono focus:border-brand"
-              />
+              {(() => {
+                const valid = isValidEmail(recipient);
+                return (
+                  <>
+                    <input
+                      type="email"
+                      value={recipient}
+                      onChange={e => setRecipient(e.target.value)}
+                      placeholder="recipient@ingrammicro.com"
+                      aria-invalid={!valid}
+                      aria-describedby={valid ? undefined : 'recipient-error'}
+                      className={`w-full bg-paper border rounded-lg px-3 py-2 text-xs text-ink placeholder:text-ink-soft/40 focus:ring-2 font-mono ${
+                        valid ? 'border-line focus:ring-brand focus:border-brand' : 'border-crit focus:ring-crit focus:border-crit'}`}
+                    />
+                    {!valid && (
+                      <p id="recipient-error" role="alert" className="text-[11px] text-crit-deep font-body">
+                        {recipient.trim()
+                          ? 'That isn’t a complete email address. Use the form name@domain.com. Finalize stays blocked until it’s fixed.'
+                          : 'A recipient is required before the digest can be sent.'}
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
               <p className="text-[10px] text-ink-soft font-mono leading-relaxed">
                 The digest previews (here + the Sent Artifacts tab) use this address. Keep it matching the <span className="text-brand-deep">To:</span> field of every <span className="text-brand-deep">Send an email (V2)</span> action in your flow. While testing, point it at one mailbox (you) — never the leadership list.
               </p>
